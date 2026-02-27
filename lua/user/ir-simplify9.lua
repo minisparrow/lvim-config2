@@ -1,0 +1,758 @@
+
+-- LLVM IR Expression Simplifier for LunarVim
+-- Version: 3.0 - Enhanced dependency visualization based on v2.3
+-- Author: minisparrow
+-- Date: 2025-11-13
+
+local M = {}
+
+-- Debug flag
+M.debug = false
+
+local function log(msg)
+  if M.debug then
+    print("[LLVM-Simplifier] " .. msg)
+  end
+end
+
+-- Expression node structure
+local function create_node(op, left, right, value, extra)
+  return {
+    op = op,
+    left = left,
+    right = right,
+    value = value,
+    extra = extra
+  }
+end
+
+-- Get the variable under cursor (starting with %)
+local function get_var_under_cursor()
+  local line = vim.api.nvim_get_current_line()
+  local col = vim.api.nvim_win_get_cursor(0)[2] + 1
+  
+  log("Current line: " .. line)
+  log("Cursor column: " .. col)
+  
+  local var = nil
+  
+  -- Pattern 1: Extract from current position backwards
+  local before = line:sub(1, col)
+  local match = before:match(".*%%(%w+)[^%w]*$")
+  if match then
+    var = match
+    log("Found variable (backward search): " .. var)
+    return var
+  end
+  
+  -- Pattern 2: Extract from current position forward
+  local after = line:sub(col)
+  match = after:match("^[^%w]*%%(%w+)")
+  if match then
+    var = match
+    log("Found variable (forward search): " .. var)
+    return var
+  end
+  
+  -- Pattern 3: Try to find any %variable in the line
+  match = line:match("%%(%w+)")
+  if match then
+    var = match
+    log("Found variable (line search): " .. var)
+    return var
+  end
+  
+  log("No variable found")
+  return nil
+end
+
+-- Parse a single line to extract variable and expression
+local function parse_line(line)
+  -- Remove tree characters
+  line = line:gsub("^[│├└─ ]+", "")
+  
+  -- insertvalue: %58 = llvm.insertvalue %56, %57[0]
+  local var, aggregate, value, indices = line:match("%%(%w+)%s*=%s*llvm%.insertvalue%s+(%%?%w+)%s*,%s*(%%?%w+)%s*%[([^%]]+)%]")
+  if var then
+    aggregate = aggregate:gsub("^%%","")
+    value = value:gsub("^%%","")
+    log(string.format("Parsed insertvalue: %%%s = insertvalue %%%s, %%%s[%s]", var, aggregate, value, indices))
+    return var, "insertvalue", aggregate, value, indices
+  end
+  
+  -- extractvalue: %109 = llvm.extractvalue %108[0]
+  var, aggregate, indices = line:match("%%(%w+)%s*=%s*llvm%.extractvalue%s+(%%?%w+)%s*%[([^%]]+)%]")
+  if var then
+    aggregate = aggregate:gsub("^%%","")
+    log(string.format("Parsed extractvalue: %%%s = extractvalue %%%s[%s]", var, aggregate, indices))
+    return var, "extractvalue", aggregate, indices
+  end
+  
+  -- getelementptr inbounds: %39 = llvm.getelementptr inbounds %2[%38]
+  var, base, index = line:match("%%(%w+)%s*=%s*llvm%.getelementptr%s+inbounds%s+%%(%w+)%s*%[%s*(%%?%w+)%s*%]")
+  if var then
+    index = index:gsub("^%%","")
+    log(string.format("Parsed getelementptr: %%%s = getelementptr %%%s[%%%s]", var, base, index))
+    return var, "getelementptr", base, index
+  end
+  
+  -- addressof: %1 = llvm.mlir.addressof @global_smem
+  var, symbol = line:match("%%(%w+)%s*=%s*llvm%.mlir%.addressof%s+@([%w_]+)")
+  if var then
+    log(string.format("Parsed addressof: %%%s = addressof @%s", var, symbol))
+    return var, "addressof", symbol
+  end
+  
+  -- ldmatrix: %146 = nvvm.ldmatrix %145
+  var, arg = line:match("%%(%w+)%s*=%s*nvvm%.ldmatrix%s+(%%?%w+)")
+  if var then
+    arg = arg:gsub("^%%","")
+    log(string.format("Parsed ldmatrix: %%%s = ldmatrix %%%s", var, arg))
+    return var, "ldmatrix", arg
+  end
+  
+  -- insertelement: %42 = llvm.insertelement %4, %40[%41 : i32]
+  var, vec, val, idx = line:match("%%(%w+)%s*=%s*llvm%.insertelement%s+(%%?%w+)%s*,%s*(%%?%w+)%s*%[%s*(%%?%w+)%s*:")
+  if var then
+    vec = vec:gsub("^%%","")
+    val = val:gsub("^%%","")
+    idx = idx:gsub("^%%","")
+    log(string.format("Parsed insertelement: %%%s = insertelement %%%s, %%%s[%%%s]", var, vec, val, idx))
+    return var, "insertelement", vec, val, idx
+  end
+  
+  -- extractelement: %51 = llvm.extractelement %48[%50 : i32]
+  var, aggregate, idx = line:match("%%(%w+)%s*=%s*llvm%.extractelement%s+(%%?%w+)%s*%[%s*(%%?%w+)%s*:")
+  if var then
+    aggregate = aggregate:gsub("^%%","")
+    idx = idx:gsub("^%%","")
+    log(string.format("Parsed extractelement: %%%s = extractelement %%%s[%%%s]", var, aggregate, idx))
+    return var, "extractelement", aggregate, idx
+  end
+  
+  -- bitcast: %58 = llvm.bitcast %51 : f16 to i16
+  var, arg, from_type, to_type = line:match("%%(%w+)%s*=%s*llvm%.bitcast%s+(%%?%w+)%s*:%s*([%w<>]+)%s+to%s+([%w<>]+)")
+  if var then
+    arg = arg:gsub("^%%","")
+    log(string.format("Parsed bitcast: %%%s = bitcast %%%s : %s to %s", var, arg, from_type, to_type))
+    return var, "bitcast", arg, nil, {from = from_type, to = to_type}
+  end
+  
+  -- Match patterns like: %43 = llvm.add %29, %0 : i32
+  var, op, arg1, arg2 = line:match("%%(%w+)%s*=%s*llvm%.(%w+)%s+%%(%w+)%s*,%s*%%(%w+)")
+  if var then
+    log(string.format("Parsed: %%%s = %s %%%s, %%%s", var, op, arg1, arg2))
+    return var, op, arg1, arg2
+  end
+  
+  -- Match disjoint or pattern: %24 = llvm.or disjoint %21, %23 : i32
+  var, arg1, arg2 = line:match("%%(%w+)%s*=%s*llvm%.or%s+disjoint%s+%%(%w+)%s*,%s*%%(%w+)")
+  if var then
+    log(string.format("Parsed: %%%s = or %%%s, %%%s", var, arg1, arg2))
+    return var, "or", arg1, arg2
+  end
+  
+  -- undef: %50 = llvm.mlir.undef
+  var = line:match("%%(%w+)%s*=%s*llvm%.mlir%.undef")
+  if var then
+    log(string.format("Parsed: %%%s = undef", var))
+    return var, "undef", nil, nil
+  end
+  
+  -- constant patterns: %0 = llvm.mlir.constant(123 : i32) : i32
+  var, arg1 = line:match("%%(%w+)%s*=%s*llvm%.mlir%.constant%(([%-]?%d+)%s*:")
+  if var then
+    log(string.format("Parsed: %%%s = const %s", var, arg1))
+    return var, "const", arg1, nil
+  end
+  
+  -- float constant
+  var, arg1 = line:match("%%(%w+)%s*=%s*llvm%.mlir%.constant%(([%-]?%d*%.?%d+[eE]?[%-]?%d*)%s*:%s*f")
+  if var then
+    log(string.format("Parsed: %%%s = const %s", var, arg1))
+    return var, "const", arg1, nil
+  end
+  
+  -- nvvm.read.ptx.sreg.tid.x
+  var = line:match("%%(%w+)%s*=%s*nvvm%.read%.ptx%.sreg%.tid%.x")
+  if var then
+    log(string.format("Parsed: %%%s = tid.x", var))
+    return var, "tid.x", nil, nil
+  end
+  
+  return nil
+end
+
+-- Build expression tree from buffer content
+local function build_tree()
+  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  local vars = {}
+  local count = 0
+  
+  log("Building tree from " .. #lines .. " lines")
+  
+  for i, line in ipairs(lines) do
+    local var, op, arg1, arg2, extra = parse_line(line)
+    if var then
+      count = count + 1
+      if op == "const" then
+        vars[var] = create_node("const", nil, nil, tonumber(arg1) or arg1)
+      elseif op == "tid.x" then
+        vars[var] = create_node("tid.x", nil, nil, "tid.x")
+      elseif op == "undef" then
+        vars[var] = create_node("undef", nil, nil, "undef")
+      elseif op == "addressof" then
+        vars[var] = create_node("addressof", nil, nil, arg1)
+      elseif op == "getelementptr" then
+        vars[var] = create_node("getelementptr", arg1, arg2, nil)
+      elseif op == "ldmatrix" then
+        vars[var] = create_node("ldmatrix", arg1, nil, nil)
+      elseif op == "insertelement" then
+        vars[var] = create_node("insertelement", arg1, arg2, nil, extra)
+      elseif op == "extractelement" then
+        vars[var] = create_node("extractelement", arg1, arg2, nil)
+      elseif op == "extractvalue" then
+        vars[var] = create_node("extractvalue", arg1, arg2, nil)
+      elseif op == "insertvalue" then
+        vars[var] = create_node("insertvalue", arg1, arg2, nil, extra)
+      elseif op == "bitcast" then
+        vars[var] = create_node("bitcast", arg1, nil, nil, extra)
+      else
+        vars[var] = create_node(op, arg1, arg2, nil)
+      end
+    end
+  end
+  
+  log("Built tree with " .. count .. " variables")
+  return vars
+end
+
+-- Safe bit operations
+local function bxor(a, b)
+  if bit and bit.bxor then return bit.bxor(a, b) end
+  local result = 0
+  local bit_val = 1
+  while a > 0 or b > 0 do
+    if (a % 2) ~= (b % 2) then result = result + bit_val end
+    a = math.floor(a / 2)
+    b = math.floor(b / 2)
+    bit_val = bit_val * 2
+  end
+  return result
+end
+
+local function bor(a, b)
+  if bit and bit.bor then return bit.bor(a, b) end
+  local result = 0
+  local bit_val = 1
+  while a > 0 or b > 0 do
+    if (a % 2) == 1 or (b % 2) == 1 then result = result + bit_val end
+    a = math.floor(a / 2)
+    b = math.floor(b / 2)
+    bit_val = bit_val * 2
+  end
+  return result
+end
+
+local function band(a, b)
+  if bit and bit.band then return bit.band(a, b) end
+  local result = 0
+  local bit_val = 1
+  while a > 0 and b > 0 do
+    if (a % 2) == 1 and (b % 2) == 1 then result = result + bit_val end
+    a = math.floor(a / 2)
+    b = math.floor(b / 2)
+    bit_val = bit_val * 2
+  end
+  return result
+end
+
+local function lshift(a, b)
+  if bit and bit.lshift then return bit.lshift(a, b) end
+  return a * (2 ^ b)
+end
+
+-- Convert value to string for display
+local function value_to_string(val, depth)
+  depth = depth or 0
+  if depth > 10 then return "..." end
+  
+  if type(val) == "number" then return tostring(val) end
+  if type(val) == "string" then return val end
+  if type(val) ~= "table" then return tostring(val) end
+  
+  -- Handle special table structures
+  if val.op == "addressof" then
+    return string.format("@%s", tostring(val.value))
+  elseif val.op == "getelementptr" then
+    return string.format("getelementptr(%s, %s)", value_to_string(val.left, depth+1), value_to_string(val.right, depth+1))
+  elseif val.op == "ldmatrix" then
+    return string.format("ldmatrix(%s)", value_to_string(val.left, depth+1))
+  elseif val.op == "extractvalue" then
+    return string.format("extractvalue(%s[%s])", value_to_string(val.left, depth+1), tostring(val.right))
+  elseif val.op == "insertvalue" then
+    return string.format("insertvalue(%s, [%s]=%s)", value_to_string(val.left, depth+1), tostring(val.extra), value_to_string(val.right, depth+1))
+  elseif val.op == "bitcast" then
+    local type_info = (type(val.extra) == "table" and val.extra.to) or "?"
+    return string.format("bitcast(%s -> %s)", value_to_string(val.left, depth+1), type_info)
+  elseif val.op == "insertelement" then
+    return string.format("insertelement(%s, [%s]=%s)", value_to_string(val.left, depth+1), tostring(val.extra or "?"), value_to_string(val.right, depth+1))
+  elseif val.op == "extractelement" then
+    return string.format("extractelement(%s[%s])", value_to_string(val.left, depth+1), tostring(val.right))
+  end
+  
+  return tostring(val)
+end
+
+-- Simplify expression recursively
+local function simplify(var, vars, memo, depth)
+  depth = depth or 0
+  if depth > 100 then
+    log("Recursion limit reached for %" .. var)
+    return "recursion_limit"
+  end
+  
+  if memo[var] then return memo[var] end
+  
+  local node = vars[var]
+  if not node then
+    log("Variable %" .. var .. " not found in tree")
+    return "%" .. var
+  end
+  
+  log("Simplifying %" .. var .. " (op: " .. node.op .. ")")
+  
+  -- Handle primitives
+  if node.op == "const" then
+    memo[var] = node.value
+    return node.value
+  end
+  
+  if node.op == "tid.x" then
+    memo[var] = "tid.x"
+    return "tid.x"
+  end
+  
+  if node.op == "undef" then
+    memo[var] = "undef"
+    return "undef"
+  end
+  
+  if node.op == "addressof" then
+    local result = { op = "addressof", value = node.value }
+    memo[var] = result
+    return result
+  end
+  
+  -- Handle structural operations
+  if node.op == "getelementptr" then
+    local base = simplify(node.left, vars, memo, depth + 1)
+    local index = node.right
+    -- Try to resolve index if it's a variable
+    local index_val = vars[index] and simplify(index, vars, memo, depth + 1) or index
+    local result = { op = "getelementptr", left = base, right = index_val }
+    memo[var] = result
+    return result
+  end
+  
+  if node.op == "ldmatrix" then
+    local arg = simplify(node.left, vars, memo, depth + 1)
+    local result = { op = "ldmatrix", left = arg }
+    memo[var] = result
+    return result
+  end
+  
+  if node.op == "insertvalue" then
+    local agg = simplify(node.left, vars, memo, depth + 1)
+    local val = simplify(node.right, vars, memo, depth + 1)
+    local result = { op = "insertvalue", left = agg, right = val, extra = node.extra }
+    memo[var] = result
+    return result
+  end
+  
+  if node.op == "extractvalue" then
+    local agg = simplify(node.left, vars, memo, depth + 1)
+    local result = { op = "extractvalue", left = agg, right = node.right }
+    memo[var] = result
+    return result
+  end
+  
+  if node.op == "bitcast" then
+    local arg = simplify(node.left, vars, memo, depth + 1)
+    local result = { op = "bitcast", left = arg, extra = node.extra }
+    memo[var] = result
+    return result
+  end
+  
+  if node.op == "insertelement" then
+    local vec = simplify(node.left, vars, memo, depth + 1)
+    local val = simplify(node.right, vars, memo, depth + 1)
+    local result = { op = "insertelement", left = vec, right = val, extra = node.extra }
+    memo[var] = result
+    return result
+  end
+  
+  if node.op == "extractelement" then
+    local agg = simplify(node.left, vars, memo, depth + 1)
+    local result = { op = "extractelement", left = agg, right = node.right }
+    memo[var] = result
+    return result
+  end
+  
+  -- Recursively simplify operands for arithmetic ops
+  local left = node.left and simplify(node.left, vars, memo, depth + 1) or nil
+  local right = node.right and simplify(node.right, vars, memo, depth + 1) or nil
+  
+  log(string.format("  %%%s: left=%s, right=%s", var, value_to_string(left), value_to_string(right or "nil")))
+  
+  -- Apply arithmetic operations
+  if node.op == "add" then
+    if type(left) == "number" and type(right) == "number" then
+      memo[var] = left + right
+      return left + right
+    elseif left == 0 then
+      memo[var] = right
+      return right
+    elseif right == 0 then
+      memo[var] = left
+      return left
+    else
+      local result = string.format("(%s + %s)", value_to_string(left), value_to_string(right))
+      memo[var] = result
+      return result
+    end
+    
+  elseif node.op == "fadd" then
+    if type(left) == "number" and type(right) == "number" then
+      memo[var] = left + right
+      return left + right
+    elseif left == 0 or left == 0.0 then
+      memo[var] = right
+      return right
+    elseif right == 0 or right == 0.0 then
+      memo[var] = left
+      return left
+    else
+      local result = string.format("(%s +f %s)", value_to_string(left), value_to_string(right))
+      memo[var] = result
+      return result
+    end
+    
+  elseif node.op == "xor" then
+    if type(left) == "number" and type(right) == "number" then
+      local result = bxor(left, right)
+      memo[var] = result
+      return result
+    elseif left == 0 then
+      memo[var] = right
+      return right
+    elseif right == 0 then
+      memo[var] = left
+      return left
+    else
+      local result = string.format("(%s ^ %s)", value_to_string(left), value_to_string(right))
+      memo[var] = result
+      return result
+    end
+    
+  elseif node.op == "or" then
+    if type(left) == "number" and type(right) == "number" then
+      local result = bor(left, right)
+      memo[var] = result
+      return result
+    elseif left == 0 then
+      memo[var] = right
+      return right
+    elseif right == 0 then
+      memo[var] = left
+      return left
+    else
+      local result = string.format("(%s | %s)", value_to_string(left), value_to_string(right))
+      memo[var] = result
+      return result
+    end
+    
+  elseif node.op == "and" then
+    if type(left) == "number" and type(right) == "number" then
+      local result = band(left, right)
+      memo[var] = result
+      return result
+    elseif left == 0 or right == 0 then
+      memo[var] = 0
+      return 0
+    else
+      local result = string.format("(%s & %s)", value_to_string(left), value_to_string(right))
+      memo[var] = result
+      return result
+    end
+    
+  elseif node.op == "shl" then
+    if type(left) == "number" and type(right) == "number" then
+      local result = lshift(left, right)
+      memo[var] = result
+      return result
+    elseif right == 0 then
+      memo[var] = left
+      return left
+    elseif left == 0 then
+      memo[var] = 0
+      return 0
+    else
+      local result = string.format("(%s << %s)", value_to_string(left), value_to_string(right))
+      memo[var] = result
+      return result
+    end
+    
+  elseif node.op == "mul" then
+    if type(left) == "number" and type(right) == "number" then
+      memo[var] = left * right
+      return left * right
+    elseif left == 0 or right == 0 then
+      memo[var] = 0
+      return 0
+    elseif left == 1 then
+      memo[var] = right
+      return right
+    elseif right == 1 then
+      memo[var] = left
+      return left
+    else
+      local result = string.format("(%s * %s)", value_to_string(left), value_to_string(right))
+      memo[var] = result
+      return result
+    end
+  end
+  
+  local result = string.format("unknown_op_%s(%s, %s)", node.op, value_to_string(left), value_to_string(right or ""))
+  memo[var] = result
+  return result
+end
+
+-- Build dependency tree for visualization
+local function build_dependency_tree(var, vars, memo, visited, indent, lines)
+  visited = visited or {}
+  indent = indent or ""
+  lines = lines or {}
+  
+  if visited[var] then
+    table.insert(lines, indent .. "%" .. var .. " (circular reference)")
+    return lines
+  end
+  
+  visited[var] = true
+  
+  local node = vars[var]
+  if not node then
+    table.insert(lines, indent .. "%" .. var .. " = <not found>")
+    return lines
+  end
+  
+  -- Get simplified result
+  local result = memo[var] or simplify(var, vars, memo, 0)
+  local result_str = value_to_string(result)
+  
+  -- Add current node
+  table.insert(lines, indent .. "%" .. var .. " = " .. result_str)
+  
+  -- Recursively show dependencies
+  local new_indent = indent .. "│ "
+  local last_indent = indent .. "  "
+  
+  if node.op == "getelementptr" then
+    if node.left then
+      table.insert(lines, indent .. "├─ base:")
+      build_dependency_tree(node.left, vars, memo, visited, new_indent, lines)
+    end
+    if node.right and vars[node.right] then
+      table.insert(lines, indent .. "└─ index:")
+      build_dependency_tree(node.right, vars, memo, visited, last_indent, lines)
+    end
+  elseif node.op == "ldmatrix" or node.op == "bitcast" or node.op == "extractvalue" or node.op == "extractelement" then
+    if node.left then
+      table.insert(lines, indent .. "└─ operand:")
+      build_dependency_tree(node.left, vars, memo, visited, last_indent, lines)
+    end
+  elseif node.op == "insertvalue" or node.op == "insertelement" then
+    if node.left then
+      table.insert(lines, indent .. "├─ aggregate:")
+      build_dependency_tree(node.left, vars, memo, visited, new_indent, lines)
+    end
+    if node.right then
+      table.insert(lines, indent .. "└─ value:")
+      build_dependency_tree(node.right, vars, memo, visited, last_indent, lines)
+    end
+  elseif node.left or node.right then
+    if node.left and vars[node.left] then
+      if node.right and vars[node.right] then
+        table.insert(lines, indent .. "├─ left:")
+        build_dependency_tree(node.left, vars, memo, visited, new_indent, lines)
+      else
+        table.insert(lines, indent .. "└─ left:")
+        build_dependency_tree(node.left, vars, memo, visited, last_indent, lines)
+      end
+    end
+    if node.right and vars[node.right] then
+      table.insert(lines, indent .. "└─ right:")
+      build_dependency_tree(node.right, vars, memo, visited, last_indent, lines)
+    end
+  end
+  
+  return lines
+end
+
+-- Show dependency tree view
+function M.show_deps()
+  log("=== Starting dependency view ===")
+  
+  local target_var = get_var_under_cursor()
+  
+  if not target_var then
+    vim.notify("No variable (starting with %) found under cursor", vim.log.levels.WARN)
+    log("Failed: No variable found")
+    return
+  end
+  
+  log("Target variable: %" .. target_var)
+  
+  local vars = build_tree()
+  
+  if not vars[target_var] then
+    local available = {}
+    for k, _ in pairs(vars) do
+      table.insert(available, k)
+    end
+    table.sort(available)
+    
+    local msg = string.format("Variable %%%s not found in buffer.\nAvailable variables: %s", 
+                              target_var, table.concat(available, ", "))
+    vim.notify(msg, vim.log.levels.ERROR)
+    log("Failed: Variable not found. Available: " .. table.concat(available, ", "))
+    return
+  end
+  
+  log("Starting simplification and dependency analysis...")
+  local memo = {}
+  local result = simplify(target_var, vars, memo)
+  local result_str = value_to_string(result)
+  log("Simplification result: " .. result_str)
+  
+  -- Build dependency tree
+  local tree_lines = build_dependency_tree(target_var, vars, memo, {}, "", {})
+  
+  -- Build display content
+  local lines = {
+    "╔═══════════════════════════════════════════════════════════╗",
+    "║        🔍 LLVM IR Dependency & Simplification            ║",
+    "╚═══════════════════════════════════════════════════════════╝",
+    "",
+    "┌─────────────────────────────────────────────────────────┐",
+    "│ 🎯 FINAL SIMPLIFIED RESULT                              │",
+    "└─────────────────────────────────────────────────────────┘",
+    "",
+    string.format("  %%%s = %s", target_var, result_str),
+    "",
+    "┌─────────────────────────────────────────────────────────┐",
+    "│ 📊 DEPENDENCY TREE                                      │",
+    "└─────────────────────────────────────────────────────────┘",
+    "",
+  }
+  
+  for _, line in ipairs(tree_lines) do
+    table.insert(lines, "  " .. line)
+  end
+  
+  table.insert(lines, "")
+  table.insert(lines, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+  table.insert(lines, "  Shortcuts: [Q]uit  [Y]ank result  [D]ebug toggle")
+  table.insert(lines, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+  
+  log("Creating floating window with " .. #lines .. " lines")
+  
+  -- Create floating window
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(buf, 'bufhidden', 'wipe')
+  
+  local width = math.min(100, vim.o.columns - 4)
+  local height = math.min(#lines + 2, math.floor(vim.o.lines * 0.8))
+  local opts = {
+    relative = 'editor',
+    width = width,
+    height = height,
+    col = math.floor((vim.o.columns - width) / 2),
+    row = math.floor((vim.o.lines - height) / 2),
+    style = 'minimal',
+    border = 'rounded',
+  }
+  
+  local win = vim.api.nvim_open_win(buf, true, opts)
+  
+  -- Apply syntax highlighting
+  vim.api.nvim_buf_call(buf, function()
+    vim.cmd([[syntax match LLVMVar /%\w\+/]])
+    vim.cmd([[syntax match LLVMOp /[+\-*&|^<>]/]])
+    vim.cmd([[syntax match LLVMNumber /\d\+/]])
+    vim.cmd([[syntax match LLVMSpecial /tid\.x/]])
+    vim.cmd([[syntax match LLVMSpecial /undef/]])
+    vim.cmd([[syntax match LLVMHeader /^[╔╗╚╝║─┌┐└┘│━├└]/]])
+    vim.cmd([[syntax match LLVMKeyword /insertvalue\|extractvalue\|getelementptr\|ldmatrix\|addressof/]])
+    vim.cmd([[highlight link LLVMVar Identifier]])
+    vim.cmd([[highlight link LLVMOp Operator]])
+    vim.cmd([[highlight link LLVMNumber Number]])
+    vim.cmd([[highlight link LLVMSpecial Special]])
+    vim.cmd([[highlight link LLVMHeader Comment]])
+    vim.cmd([[highlight link LLVMKeyword Keyword]])
+  end)
+  
+  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
+  
+  -- Store result for yanking
+  local yank_text = string.format("%%%s = %s", target_var, result_str)
+  
+  -- Keybindings
+  local keymaps = {
+    { 'n', 'q', ':close<CR>', 'Quit' },
+    { 'n', 'Q', ':close<CR>', 'Quit' },
+    { 'n', '<Esc>', ':close<CR>', 'Quit' },
+    { 'n', 'y', string.format(':let @+ = "%s"<CR>:let @" = "%s"<CR>:echo "Result copied!"<CR>', 
+      yank_text:gsub('"', '\\"'), yank_text:gsub('"', '\\"')), 'Yank result' },
+    { 'n', 'Y', string.format(':let @+ = "%s"<CR>:let @" = "%s"<CR>:echo "Result copied!"<CR>', 
+      yank_text:gsub('"', '\\"'), yank_text:gsub('"', '\\"')), 'Yank result' },
+  }
+  
+  for _, keymap in ipairs(keymaps) do
+    vim.api.nvim_buf_set_keymap(buf, keymap[1], keymap[2], keymap[3], 
+      { noremap = true, silent = true })
+  end
+  
+  -- Position cursor at the result line
+  vim.api.nvim_win_set_cursor(win, {9, 0})
+  
+  log("=== Dependency view complete ===")
+end
+
+-- Toggle debug mode
+function M.toggle_debug()
+  M.debug = not M.debug
+  vim.notify("LLVM Simplifier debug mode: " .. (M.debug and "ON" or "OFF"), vim.log.levels.INFO)
+end
+
+-- Setup commands
+function M.setup()
+  vim.api.nvim_create_user_command('LLVMDeps', M.show_deps, {})
+  vim.api.nvim_create_user_command('LLVMDebug', M.toggle_debug, {})
+  
+  -- Add keybindings
+  if pcall(function() return lvim end) then
+    lvim.keys.normal_mode["<leader>ld"] = ":LLVMDeps<CR>"
+  end
+  
+  vim.notify("🎯 LLVM Simplifier v3.0 loaded! (by @minisparrow)\n" ..
+    "  <leader>ld or :LLVMDeps - Show dependency tree\n" ..
+    "  :LLVMDebug - Toggle debug mode\n" ..
+    "  Inside window: y=copy, q=quit", 
+    vim.log.levels.INFO)
+end
+
+return M
