@@ -11,43 +11,40 @@
 ---
 local plugins = {
   {
-    "sindrets/diffview.nvim",
-    dependencies = { "nvim-lua/plenary.nvim" },
-    cmd = { "DiffviewOpen", "DiffviewFileHistory" },
     -- copilot
     --
-    {
-        "zbirenbaum/copilot.lua",
-        cmd = "Copilot",
-        event = "InsertEnter",
-        config = function()
-            require("copilot").setup({})
-        end,
-    },
-    
-    {
-        "zbirenbaum/copilot-cmp",
-        config = function()
-            require("copilot_cmp").setup({
-                suggestion = { enabled = false },
-                panel = { enabled = false }
-            })
-        end
-    },
+    -- {
+    --     "zbirenbaum/copilot.lua",
+    --     cmd = "Copilot",
+    --     event = "InsertEnter",
+    --     config = function()
+    --         require("copilot").setup({})
+    --     end,
+    -- },
+    -- 
+    -- {
+    --     "zbirenbaum/copilot-cmp",
+    --     config = function()
+    --         require("copilot_cmp").setup({
+    --             suggestion = { enabled = false },
+    --             panel = { enabled = false }
+    --         })
+    --     end
+    -- },
 
 
     -- Copilot Chat (Agent)
-  {
-    "CopilotC-Nvim/CopilotChat.nvim",
-    branch = "canary",
-    dependencies = {
-      { "zbirenbaum/copilot.lua" },
-      { "nvim-lua/plenary.nvim" },
-    },
-    config = function()
-      require("CopilotChat").setup()
-    end,
-  },
+    -- {
+    --   "CopilotC-Nvim/CopilotChat.nvim",
+    --   branch = "canary",
+    --   dependencies = {
+    --     { "zbirenbaum/copilot.lua" },
+    --     { "nvim-lua/plenary.nvim" },
+    --   },
+    --   config = function()
+    --     require("CopilotChat").setup()
+    --   end,
+    -- },
 
     "ojroques/nvim-osc52", -- 更方便的做远程ssh复制粘贴到本地
 
@@ -59,6 +56,19 @@ local plugins = {
     "xuhdev/vim-latex-live-preview",
     "jbyuki/nabla.nvim",
     "liuchengxu/graphviz.vim",
+
+
+
+    ---git operation: diffview
+    {
+       "sindrets/diffview.nvim",
+       dependencies = { "nvim-lua/plenary.nvim" },
+       cmd = { "DiffviewOpen", "DiffviewFileHistory" },
+
+    },
+    {
+      "lewis6991/gitsigns.nvim",
+    },
     -- auto scroll
     {
       "karb94/neoscroll.nvim",
@@ -174,7 +184,7 @@ for mode, mappings in pairs(plugin_git.keybindings) do
     lvim.keys[mode][key] = cmd
   end
 end
-lvim.builtin.gitsigns.active = false
+lvim.builtin.gitsigns.active = true 
 
 lvim.plugins = plugins
 
