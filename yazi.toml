@@ -1,0 +1,31 @@
+[mgr]
+ratio = [ 1, 2, 5 ]
+sort_by = "alphabetical"
+sort_sensitive = false
+sort_reverse = false
+sort_dir_first = true
+linemode = "none"
+show_hidden = false
+show_symlink = true
+
+[opener]
+edit = [
+{ run = 'lvim %s', block = true, desc = "Edit", for = "linux" },
+]
+md = [
+{ run = 'CLICOLOR_FORCE=1 glow -s dark -w "$(tput cols)" %s | less -R', block = true, desc = "Render Markdown", for = "linux" },
+]
+md_toc = [
+{ run = 'pandoc --toc -t plain %s | less', block = true, desc = "Markdown TOC", for = "linux" },
+]
+
+[open]
+rules = [
+{ url = "*.{md,markdown,MD}", use = [ "edit", "md", "md_toc", "reveal" ] },
+{ url = "*.{py,cpp}", use = [ "edit", "reveal" ] },
+{ mime = "text/*", use = [ "edit", "reveal" ] },
+]
+
+[[plugin.prepend_previewers]]
+url = "*.md"
+run = 'piper -- CLICOLOR_FORCE=1 glow -s dark -w $w "$1"'
