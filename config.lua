@@ -53,7 +53,7 @@ local plugins = {
     "KeitaNakamura/tex-conceal.vim",
     "SirVer/ultisnips",
     "lervag/vimtex", --latex 主要是这个， 其他两个可以不用
-    "xuhdev/vim-latex-live-preview",
+    -- "xuhdev/vim-latex-live-preview",
     "jbyuki/nabla.nvim",
     "liuchengxu/graphviz.vim",
 
@@ -562,10 +562,31 @@ table.insert(lvim.plugins, {
   end,
 })
 
+table.insert(lvim.plugins, {
+  "MeanderingProgrammer/render-markdown.nvim",
+  ft = { "markdown" },
+  dependencies = { "nvim-treesitter/nvim-treesitter" },
+  config = function()
+    require("render-markdown").setup({
+      code = {
+        style = "full",
+        border = "thin",
+        disable_background = true,
+      },
+    })
+    vim.api.nvim_set_hl(0, "RenderMarkdownCode", { link = "NormalFloat" })
+    vim.api.nvim_set_hl(0, "RenderMarkdownCodeBorder", { link = "NormalFloat" })
+    vim.api.nvim_set_hl(0, "RenderMarkdownCodeInline", { link = "Visual" })
+    vim.api.nvim_set_hl(0, "RenderMarkdownCodeInfo", { link = "Comment" })
+  end,
+})
+
 -- 添加到 config.lua
 lvim.keys.normal_mode["<leader>tf"] = "<cmd>ToggleTerm direction=float<CR>"
 lvim.keys.normal_mode["<leader>th"] = "<cmd>ToggleTerm direction=horizontal<CR>"
 lvim.keys.normal_mode["<leader>tv"] = "<cmd>ToggleTerm direction=vertical<CR>"
+lvim.keys.normal_mode["<leader>mr"] = "<cmd>RenderMarkdown toggle<CR>"
+lvim.keys.normal_mode["<leader>mp"] = "<cmd>RenderMarkdown preview<CR>"
 
 -- 切换不同编号的终端
 lvim.keys.normal_mode["<leader>t1"] = "<cmd>1ToggleTerm<CR>"
@@ -599,4 +620,3 @@ local on_tab = vim.schedule_wrap(function(fallback)
     end
 end)
 lvim.builtin.cmp.mapping["<Tab>"] = on_tab
-
