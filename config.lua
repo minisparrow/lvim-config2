@@ -587,6 +587,7 @@ lvim.keys.normal_mode["<leader>th"] = "<cmd>ToggleTerm direction=horizontal<CR>"
 lvim.keys.normal_mode["<leader>tv"] = "<cmd>ToggleTerm direction=vertical<CR>"
 lvim.keys.normal_mode["<leader>mr"] = "<cmd>RenderMarkdown toggle<CR>"
 lvim.keys.normal_mode["<leader>mp"] = "<cmd>RenderMarkdown preview<CR>"
+lvim.keys.normal_mode["<leader>mt"] = "<cmd>SymbolsOutline<CR>"
 
 -- 切换不同编号的终端
 lvim.keys.normal_mode["<leader>t1"] = "<cmd>1ToggleTerm<CR>"
