@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 # we can put this script to a project home, and modify the project name and directory
@@ -11,19 +10,19 @@ else
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
 
-SESSIONS=("tt-to-dsl" "flydsl" "triton")
-WINDOWS=("claude" "yaz" "git" "diff" "vim" "others")
+declare -A SESSION_DIRS
 
 # Session -> directory mapping
-declare -A SESSION_DIRS
-SESSION_DIRS[llvm]="$SCRIPT_DIR/llvm"
-SESSION_DIRS[triton]="$SCRIPT_DIR/triton"
-SESSION_DIRS[cutedsl]="$SCRIPT_DIR/cutedsl"
+SESSION_DIRS["lv"]="/Users/jun/.config/lvim/lvim-config2/"
+SESSION_DIRS["projs"]="/Users/jun/projs/"
+SESSION_DIRS["obs"]="/Users/jun/doc/icloud-obs-git"
+SESSIONS=("${!SESSION_DIRS[@]}")
+WINDOWS=("claude" "yaz" "git" "diff" "vim" "others")
 
 # Kill existing sessions if they exist
-for sess in "${SESSIONS[@]}"; do
-    tmux kill-session -t "$sess" 2>/dev/null
-done
+# for sess in "${SESSIONS[@]}"; do
+#     tmux kill-session -t "$sess" 2>/dev/null
+# done
 
 # Get first window name (zsh arrays are 1-indexed, bash are 0-indexed)
 if [ -n "$ZSH_VERSION" ]; then
@@ -35,6 +34,19 @@ else
     REST_WINS=("${WINDOWS[@]:1}")
     FIRST_SESS="${SESSIONS[0]}"
 fi
+
+# Argument parsing
+ATTACH_SESSION=""
+LIST_ONLY=0
+
+while getopts "a:l" opt; do
+    case "$opt" in
+        a) ATTACH_SESSION="$OPTARG";;
+        l) LIST_ONLY=1;;
+        ?) echo "Usage: $0 [-a <session_name>] [-l]" >&2; exit 1;;
+    esac
+done
+shift $((OPTIND-1))
 
 for sess in "${SESSIONS[@]}"; do
     dir="${SESSION_DIRS[$sess]}"
@@ -51,6 +63,17 @@ for sess in "${SESSIONS[@]}"; do
     tmux select-window -t "$sess:$FIRST_WIN"
 done
 
-# Attach to the first session
-tmux attach-session -t "$FIRST_SESS"
-
+if [ "$LIST_ONLY" -eq 1 ]; then
+    echo "Tmux sessions created. Use 'tmux attach -t <session_name>' to connect."
+    tmux list-sessions
+elif [ -n "$ATTACH_SESSION" ]; then
+    if tmux has-session -t "$ATTACH_SESSION" 2>/dev/null; then
+        tmux attach-session -t "$ATTACH_SESSION"
+    else
+        echo "Error: Session '$ATTACH_SESSION' not found. Available sessions:"
+        tmux list-sessions
+        exit 1
+    fi
+else
+    tmux attach-session -t "$FIRST_SESS"
+fi
