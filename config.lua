@@ -151,7 +151,60 @@ local plugins = {
     "wbthomason/packer.nvim",
     "jose-elias-alvarez/null-ls.nvim",
     "nvim-lua/plenary.nvim",
-    "nvim-treesitter/nvim-treesitter"
+    "nvim-treesitter/nvim-treesitter",
+    -- Markdown slide presentation
+    {
+      -- dir = vim.fn.stdpath("config") .. "/local-plugins/presenting.nvim",
+      "minisparrow/presenting.nvim",
+      name = "presenting.nvim",
+      opts = {
+        options = {
+          width = 120,
+          toc_width = 40,
+          toc_gap = 6,
+          toc_separator = "┃",
+          toc_separator_highlight = "FloatBorder",
+          toc_padding = 1,
+          toc_bullet = "•",
+        },
+        separator = {
+          markdown = "^---$",
+        },
+        keep_separator = false,
+        keymaps={
+          ["l"] = nil,  -- 禁用默认的 l=last，避免与光标右移冲突
+          ["L"] = function() _G.Presenting.last() end,  -- 改用大写 L 跳到最后一页
+          ["t"] = function() _G.Presenting.toggle_toc() end,
+          ["e"] = function() _G.Presenting.goto_source() end, -- 回到原文档编辑
+          ["r"] = function() _G.Presenting.refresh_from_source() end, -- 保存后刷新幻灯片
+          ["s"] = function() _G.Presenting.goto_slide_prompt() end, -- 跳转到指定页
+          ["+"] = function() _G.Presenting.toc_wider(5) end,
+          ["-"] = function() _G.Presenting.toc_narrower(5) end,
+          [">"] = function() _G.Presenting.slide_wider(10) end,
+        },
+      },
+      cmd = { "Presenting" },
+    },
+    {
+      "ducks/vimdeck.nvim",
+      cmd = { "Vimdeck" },
+    },
+    -- Treesitter configuration
+    require 'nvim-treesitter.configs'.setup {
+      highlight = {
+        enable = true, -- false will disable the whole extension
+      },
+      incremental_selection = {
+        enable = true,
+        keymaps = {
+          init_selection = "gnn",
+          node_incremental = "grn",
+          scope_incremental = "grc",
+          node_decremental = "grm",
+        },
+      },
+    }
+
     -- jupyter notebook
     -- 'luk400/vim-jukit',
     -- "GCBallesteros/jupytext.nvim"
@@ -229,6 +282,9 @@ lvim.builtin.which_key.mappings["dS"] = { "<cmd>lua require('neotest').summary.t
 -- 添加清除所有断点的快捷键, conflict with dap debug continue
 -- vim.api.nvim_set_keymap('n', '<leader>dc', ':lua require("dap").clear_breakpoints()<CR>',
 --   { noremap = true, silent = true })
+--
+lvim.builtin.indentlines.options.use_treesitter = false
+lvim.builtin.indentlines.options.show_current_context = false
 
 -- vim options
 vim.opt.shiftwidth = 2
@@ -236,40 +292,40 @@ vim.opt.tabstop = 2
 vim.opt.relativenumber = false
 
 -- lifunc clipboard
--- 设置xclip复制到vim.g.clipboard
--- this is for linux
 vim.opt.clipboard = "unnamedplus"
 vim.opt.number = true
-vim.g.clipboard = {
-  name = 'xclip',
-  copy = {
-    ['+'] = 'xclip -selection clipboard',
-    ['*'] = 'xclip -selection primary',
-  },
-  paste = {
-    ['+'] = 'xclip -selection clipboard -o',
-    ['*'] = 'xclip -selection primary -o',
-  },
-  cache_enabled = true,
-}
 
+if vim.fn.has("mac") == 1 or vim.fn.has("macunix") == 1 then
+  vim.g.clipboard = {
+    name = "pbcopy",
+    copy = {
+      ["+"] = "pbcopy",
+      ["*"] = "pbcopy",
+    },
+    paste = {
+      ["+"] = "pbpaste",
+      ["*"] = "pbpaste",
+    },
+    cache_enabled = true,
+  }
+elseif vim.fn.executable("xclip") == 1 then
+  vim.g.clipboard = {
+    name = "xclip",
+    copy = {
+      ["+"] = "xclip -selection clipboard",
+      ["*"] = "xclip -selection primary",
+    },
+    paste = {
+      ["+"] = "xclip -selection clipboard -o",
+      ["*"] = "xclip -selection primary -o",
+    },
+    cache_enabled = true,
+  }
+end
 
--- this is for macos 
--- vim.opt.clipboard = "unnamedplus"
--- vim.opt.number = true
--- vim.g.clipboard = {
---   name = 'pbcopy',
---   copy = {
---     ['+'] = 'pbcopy',
---     ['*'] = 'pbcopy',
---   },
---   paste = {
---     ['+'] = 'pbpaste',
---     ['*'] = 'pbpaste',
---   },
---   cache_enabled = true,
--- }
-
+-- Markdown slide presentation
+lvim.keys.normal_mode["<leader>ms"] = "<cmd>Presenting<CR>"
+lvim.keys.normal_mode["<leader>mv"] = "<cmd>Vimdeck<CR>"
 
 vim.opt.number = true
 require("symbols-outline").setup()
@@ -494,7 +550,7 @@ require("user.searchword")
 require("user.jump")
 require("user.countlines")
 require("user.depends-tree")
-require("user.ir-simplify").setup()
+-- require("user.ir-simplify").setup()  -- module not found, commented out
 require("user.file-tree")
 require("user.clangd-lsp")
 require("user.lualine")
@@ -531,9 +587,9 @@ function add_to_dap_watch()
 end
 lvim.keys.normal_mode["<leader>dwa"] = ":lua add_to_dap_watch()<CR>"
 
-vim.keymap.set('v', '<leader>y', function()
-  require('osc52').copy_visual()
-end)
+-- vim.keymap.set('v', '<leader>y', function()
+--   require('osc52').copy_visual()
+-- end)
 
 -- 在文件末尾添加
 table.insert(lvim.plugins, {
@@ -566,28 +622,104 @@ table.insert(lvim.plugins, {
   "MeanderingProgrammer/render-markdown.nvim",
   ft = { "markdown" },
   dependencies = { "nvim-treesitter/nvim-treesitter" },
-  config = function()
-    require("render-markdown").setup({
-      code = {
-        style = "full",
-        border = "thin",
-        disable_background = true,
+  opts = {
+    heading = {
+      enabled = true,
+      sign = true,
+      icons = { "󰲡 ", "󰲣 ", "󰲥 ", "󰲧 ", "󰲩 ", "󰲫 " },
+      width = "full",
+    },
+    code = {
+      enabled = true,
+      sign = true,
+      style = "full",
+      width = "full",
+      right_pad = 1,
+      language_pad = 2,
+      disable_background = true,
+    },
+    checkbox = {
+      enabled = true,
+      unchecked = { icon = "󰄱 ", highlight = "RenderMarkdownUnchecked" },
+      checked = { icon = "󰱒 ", highlight = "RenderMarkdownChecked" },
+      custom = {
+        todo = { raw = "[-]", rendered = "󰥔 ", highlight = "RenderMarkdownTodo" },
+        important = { raw = "[!]", rendered = "󰀦 ", highlight = "RenderMarkdownImportant" },
       },
+    },
+    link = {
+      enabled = true,
+      image = true,
+      url = true,
+    },
+    quote = {
+      enabled = true,
+      icon = "▎",
+    },
+    dash = {
+      enabled = true,
+      width = 79,
+      icon = "─",
+    },
+    pipe_table = {
+      enabled = true,
+      style = "full",
+      alignment = "center",
+    },
+  },
+})
+
+table.insert(lvim.plugins, {
+  "ellisonleao/glow.nvim",
+  config = function()
+    require("glow").setup({
+      glow_path = vim.fn.exepath("glow"),
+      width = 120,
+      border = "single",
+      style = "dark",
     })
-    vim.api.nvim_set_hl(0, "RenderMarkdownCode", { link = "NormalFloat" })
-    vim.api.nvim_set_hl(0, "RenderMarkdownCodeBorder", { link = "NormalFloat" })
-    vim.api.nvim_set_hl(0, "RenderMarkdownCodeInline", { link = "Visual" })
-    vim.api.nvim_set_hl(0, "RenderMarkdownCodeInfo", { link = "Comment" })
   end,
+  cmd = { "Glow" },
+})
+
+table.insert(lvim.plugins, {
+  "epwalsh/obsidian.nvim",
+  version = "*",
+  ft = "markdown",
+  dependencies = {
+    "nvim-lua/plenary.nvim",
+  },
+  opts = {
+    dir = "~/doc/icloud-obs-git/", -- 请修改为你的 Obsidian vault 路径
+    completion = {
+      nvim_cmp = true,
+    },
+    mappings = {
+      ["gf"] = {
+        action = function()
+          return require("obsidian").util.gf_passthrough()
+        end,
+        opts = { noremap = false, expr = true, buffer = true },
+      },
+      ["<leader>ch"] = {
+        action = function()
+          return require("obsidian").util.toggle_checkbox()
+        end,
+        opts = { buffer = true },
+      },
+    },
+  },
 })
 
 -- 添加到 config.lua
 lvim.keys.normal_mode["<leader>tf"] = "<cmd>ToggleTerm direction=float<CR>"
 lvim.keys.normal_mode["<leader>th"] = "<cmd>ToggleTerm direction=horizontal<CR>"
 lvim.keys.normal_mode["<leader>tv"] = "<cmd>ToggleTerm direction=vertical<CR>"
-lvim.keys.normal_mode["<leader>mr"] = "<cmd>RenderMarkdown toggle<CR>"
-lvim.keys.normal_mode["<leader>mp"] = "<cmd>RenderMarkdown preview<CR>"
+lvim.keys.normal_mode["<leader>rm"] = "<cmd>RenderMarkdown toggle<CR>"
+lvim.keys.normal_mode["<leader>rp"] = "<cmd>RenderMarkdown preview<CR>"
+lvim.keys.normal_mode["<leader>mg"] = "<cmd>Glow<CR>"
 lvim.keys.normal_mode["<leader>mt"] = "<cmd>SymbolsOutline<CR>"
+
 
 -- 切换不同编号的终端
 lvim.keys.normal_mode["<leader>t1"] = "<cmd>1ToggleTerm<CR>"
