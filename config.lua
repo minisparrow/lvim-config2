@@ -290,38 +290,10 @@ lvim.builtin.indentlines.options.show_current_context = false
 vim.opt.shiftwidth = 2
 vim.opt.tabstop = 2
 vim.opt.relativenumber = false
-
--- lifunc clipboard
-vim.opt.clipboard = "unnamedplus"
 vim.opt.number = true
 
-if vim.fn.has("mac") == 1 or vim.fn.has("macunix") == 1 then
-  vim.g.clipboard = {
-    name = "pbcopy",
-    copy = {
-      ["+"] = "pbcopy",
-      ["*"] = "pbcopy",
-    },
-    paste = {
-      ["+"] = "pbpaste",
-      ["*"] = "pbpaste",
-    },
-    cache_enabled = true,
-  }
-elseif vim.fn.executable("xclip") == 1 then
-  vim.g.clipboard = {
-    name = "xclip",
-    copy = {
-      ["+"] = "xclip -selection clipboard",
-      ["*"] = "xclip -selection primary",
-    },
-    paste = {
-      ["+"] = "xclip -selection clipboard -o",
-      ["*"] = "xclip -selection primary -o",
-    },
-    cache_enabled = true,
-  }
-end
+-- lifunc clipboard
+require("user.clipboard")
 
 -- Markdown slide presentation
 lvim.keys.normal_mode["<leader>ms"] = "<cmd>Presenting<CR>"
