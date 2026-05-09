@@ -753,3 +753,8 @@ local on_tab = vim.schedule_wrap(function(fallback)
     end
 end)
 lvim.builtin.cmp.mapping["<Tab>"] = on_tab
+
+lvim.keys.normal_mode["<leader>md"] = {
+  function() require("user.slide-split").split_slides() end,
+  desc = "Markdown 生成幻灯片分页"
+}
